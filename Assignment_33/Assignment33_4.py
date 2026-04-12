@@ -1,0 +1,253 @@
+import psutil
+import sys
+import os
+import time
+import schedule
+import smtplib
+from email.message import EmailMessage
+
+def CreateLog(FolderName):
+    Border = "-"*50
+     
+    Ret = False
+
+    Ret = os.path.exists(FolderName)
+
+    if(Ret == True):
+        Ret = os.path.isdir(FolderName)
+        if(Ret == False):
+            print("Unable to create folder")
+            return
+        
+    else:
+        os.mkdir(FolderName)
+        print("Directory for log files gets created successfully")
+
+    timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
+    FileName = os.path.join(FolderName,"Marvellous_%s.log" %timestamp)
+    print("Log files get created with name : ",FileName)
+
+    fobj = open(FileName, "w")
+
+    fobj.write(Border+"\n")
+    fobj.write("------Marvellous Platform Surveillance System-----\n")
+    fobj.write("Log created at : "+time.ctime()+"\n")
+    fobj.write(Border+"\n\n")
+
+    fobj.write("----------------System Report---------------------\n")
+
+    #print("CPU Usage : ",psutil.cpu_percent())
+    fobj.write("CPU Usage : %s %%\n" %psutil.cpu_percent())
+    fobj.write(Border+"\n")
+
+    mem = psutil.virtual_memory()
+    #print("RAM usage : ",mem.percent)
+    fobj.write("RAM Usage : %s %%\n" %mem.percent)
+    fobj.write(Border+"\n")
+
+    fobj.write("\nDisk Usage Report\n")
+    fobj.write(Border+"\n")
+    for part in psutil.disk_partitions():
+        try:
+            usage = psutil.disk_usage(part.mountpoint)
+            #print(f"{part.mountpoint} used {usage.percent}%%")
+            fobj.write("%s -> %s %% used\n" %(part.mountpoint, usage.percent))
+        except:
+            pass
+    fobj.write(Border+"\n")
+
+    net = psutil.net_io_counters()
+    fobj.write("Network Usage Report\n")
+    fobj.write("Sent : %.2f MB\n" % (net.bytes_sent / (1024 * 1024)))
+    fobj.write("Recv : %.2f MB\n" % (net.bytes_recv / (1024 * 1024)))
+    fobj.write(Border+"\n")
+
+    # Process LOG
+    Data = ProcessScan()
+
+    for info in Data:
+        fobj.write("PID : %s\n" %info.get("pid"))
+        fobj.write("Name : %s\n" %info.get("name"))
+        fobj.write("Username : %s\n" %info.get("username"))
+        fobj.write("Status : %s\n" %info.get("status"))
+        fobj.write("Start time : %s\n" %info.get("create_time"))
+        fobj.write("CPU %% : %.2f\n" %info.get("cpu_percent"))
+        fobj.write("Memory %% : %.2f\n" %info.get("memory_percent"))
+        fobj.write("RSS : %s bytes\n" %info.get("rss"))
+        fobj.write("VMS : %s bytes\n" %info.get("vms"))
+        fobj.write("Threads : %s\n" %info.get("num_threads"))
+        fobj.write("Open files : %s\n"%info.get("open_files_count"))
+        fobj.write(Border+"\n")
+
+    fobj.write(Border+"\n")
+    fobj.write("-----------------End of Log File------------------\n")
+    fobj.write(Border+"\n")
+
+    return FileName, Data
+
+def ProcessScan():
+    listprocess = []
+
+    # Warm up for CPU percent
+    for proc in psutil.process_iter():
+        try:
+            proc.cpu_percent()
+        except:
+            pass
+
+    time.sleep(0.2)
+
+    for proc in psutil.process_iter():
+        try:
+            info = proc.as_dict(attrs=["pid", "name", "username", "status", "create_time", "num_threads"])
+            # Convert create_time
+            try:
+                info["create_time"] = time.strftime("%Y-%m-%d %H:%M:%S",time.localtime(info["create_time"]))
+            except:
+                info["create_time"] = "NA"
+
+            info["cpu_percent"] = proc.cpu_percent(None)
+            info["memory_percent"] = proc.memory_percent()
+
+            try:
+                meminfo = proc.memory_info()
+                info["rss"] = meminfo.rss
+                info["vms"] = meminfo.vms
+            except(psutil.AccessDenied, psutil.NoSuchProcess):
+                info["rss"] = "Access Denied"
+                info["vms"] = "Access Denied"
+
+            try:
+                open_files = proc.open_files()
+                info["open_files_count"] = len(open_files)
+            except(psutil.AccessDenied, psutil.NoSuchProcess):
+                info["open_files_count"] = "Access Denied"
+
+            listprocess.append(info)
+
+            
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            pass
+
+    return listprocess[:10]
+
+def SendMail(ReceiverMail,FileName,Summary):
+    try:
+        SenderMail = "marvellouspython20@gmail.com"
+        App_password = "wanm kyul nyfh grac"
+
+        message = EmailMessage()
+        message["Subject"] = "System Surveillance Report"
+        message["From"] = SenderMail
+        message["To"] = ReceiverMail
+
+        message.set_content(Summary)
+
+        with open(FileName, "rb") as f:
+            file_data = f.read()
+            file_name = f.name
+
+        message.add_attachment(file_data, maintype="application",subtype="octet-stream",filename = file_name)
+
+        server = smtplib.SMTP_SSL("smtp.gmail.com",465)
+        server.login(SenderMail,App_password)
+        server.send_message(message)
+        server.quit()
+
+        print("Email sent successfully")
+
+    except Exception as e:
+        print("Unable to send email : ",e)
+
+def CreateSummary(Data):
+    Total = len(Data)
+
+    TotalCPU = sorted(Data, key=lambda x : x.get("cpu_percent",0),reverse=True)[:3]
+    TotalMemory = sorted(Data, key=lambda x : x.get("memory_percent",0),reverse=True)[:3]
+    TotalThreads = sorted(Data, key=lambda x : x.get("num_threads",0),reverse=True)[:3]
+    TotalFiles = sorted(Data, key=lambda x : (x.get("open_files_count")if isinstance (x.get("open_files_count"), int) else 0),reverse=True)[:3]
+
+    summary = "----- System Summary -----"
+    summary = summary + f"Total Processes : {Total}\n\n"
+
+    summary = summary + "Top CPU Processes : \n"
+    for p in TotalCPU:
+        summary = summary + f"{p['name']} ({p['cpu_percent']}%)\n"
+
+    summary = summary + "\nTop Memory Processes : \n"
+    for p in TotalMemory:
+        summary = summary + f"{p['name']} ({p['memory_percent']}%)\n"
+
+    summary = summary + "\nTop Thread Processes : \n"
+    for p in TotalThreads:
+        summary = summary + f"{p['name']} ({p['num_threads']} threads)\n"
+
+    summary = summary + "\nTop Open File  Processes : \n"
+    for p in TotalFiles:
+        summary = summary + f"{p['name']} ({p['open_files_count']})\n"
+
+    return summary
+
+def LogAndMail(FolderName, ReceiverMail):
+    FileName, Data = CreateLog(FolderName)
+    Summary = CreateSummary(Data)
+    SendMail(ReceiverMail, FileName, Summary)
+
+def main():
+    Border = "-"*50
+    print(Border)
+    print("------Marvellous Platform Surveillance System-----")
+    print(Border)
+
+    if(len(sys.argv) == 2):
+        if(sys.argv[1] == "--h" or sys.argv[1] == "--H"):
+            print("This script is used to : ")
+            print("1 : Create automatic logs")
+            print("2 : Executes periodically")
+            print("3 : Sends mail with logs")
+            print("4 : Store information about processess")
+            print("5 : Store information about CPU")
+            print("6 : Store information about RAM usage")
+            print("7 : Store information about secondary storage")
+
+        elif(sys.argv[1] == "--u" or sys.argv[1] == "--U"):
+            print("Use the automation script as ")
+            print("ScriptName.py TimeInterval DirectoryName")
+            print("TimeInterval : The time in minutes for periodic scheduling")
+            print("DirectoryName : Name of directory to create autologs")
+
+        else:
+            print("Unable to proceed as there is no such option")
+            print("Please use --h or --u to get more details")
+
+    # python PlatformSurveillance.py "MarvellousLog" "receiver@gmail.com" 10
+    elif(len(sys.argv) == 4):
+        print("Inside projects logic")
+        FolderName = sys.argv[1]
+        ReceiverMail = sys.argv[2]
+        Interval = int(sys.argv[3])
+
+        # Apply the scheduler
+        schedule.every(int(sys.argv[3])).minutes.do(LogAndMail, sys.argv[1], sys.argv[2])
+
+        print("Platform Surveillance System started successfully")
+        print("Directory created with name : ",sys.argv[1])
+        print("Time interval in minutes : ",sys.argv[3])
+        print("Press Ctrl + C to stop the execution")
+
+        # Wait till abort
+        while True:
+            schedule.run_pending()
+            time.sleep(1)
+
+    else:
+        print("Invalid number of command line argumaents")
+        print("Unable to proceed as there is no such option")
+        print("Please use --h or --u to get more details")
+
+    print(Border)
+    print("---------Thank you for using our script-----------")
+    print(Border)
+
+if __name__ == "__main__":
+    main()
